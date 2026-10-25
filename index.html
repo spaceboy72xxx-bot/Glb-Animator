@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="fil">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>GLB Animator</title>
+<style>
+:root{--bg:#14202b;--panel:#1d2f3d;--ink:#f1ece0;--mute:#9db0bd;--acc:#ffb703;--line:#2f4759;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--ink);font-family:"Trebuchet MS","Segoe UI",Arial,sans-serif;display:flex;flex-direction:column}
+header{padding:12px 14px 8px}
+h1{margin:0;font-size:1.25rem}
+p.sub{margin:2px 0 0;color:var(--mute);font-size:.85rem}
+#stage{flex:1;min-height:280px;position:relative;touch-action:none;background:radial-gradient(circle at 50% 40%,#233b4d,#0f1820)}
+canvas{display:block;width:100%;height:100%}
+#info{position:absolute;left:10px;right:10px;bottom:8px;color:var(--mute);font-size:.78rem;text-align:center;pointer-events:none}
+.panel{background:var(--panel);border-top:1px solid var(--line);padding:12px 14px;display:grid;gap:10px}
+.btns{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button,label.file{background:var(--acc);color:#1a1200;border:0;border-radius:8px;padding:10px 14px;font:inherit;font-weight:700;cursor:pointer;position:relative}
+button.alt{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button:focus-visible,label.file:focus-within,select:focus-visible,input:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+label.file input{position:absolute;opacity:0;width:1px;height:1px}
+select{background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:9px;font:inherit;min-width:140px}
+.row{display:grid;grid-template-columns:70px 1fr 40px;align-items:center;gap:8px;font-size:.85rem}
+.row output{color:var(--acc);text-align:right}
+input[type=range]{width:100%;accent-color:var(--acc)}
+</style>
+</head>
+<body>
+<header>
+<h1>GLB Animator</h1>
+<p class="sub">Mag-upload ng .glb at pagagalawin ito. Para sa walang rig na tao, awtomatiko itong lalagyan ng rig.</p>
+</header>
+<div id="stage"><div id="info">Pumili ng .glb file o gamitin ang sample na tao.</div></div>
+<div class="panel">
+<div class="btns">
+<label class="file">Pumili ng .glb<input id="file" type="file" accept=".glb,.gltf,model/gltf-binary"></label>
+<button class="alt" id="sample">Sample na tao</button>
+<button class="alt" id="turn" title="Kung patagilid ang galaw ng braso at binti">I-ikot ang rig 90°</button>
+</div>
+<div class="btns">
+<select id="anim" aria-label="Galaw"></select>
+</div>
+<div class="row"><span>Bilis</span><input id="speed" type="range" min="0.2" max="3" step="0.1" value="1"><output id="speedO">1</output></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script>
+(function(){
+var T=THREE,stage=document.getElementById('stage'),info=document.getElementById('info');
+var sel=document.getElementById('anim'),spd=document.getElementById('speed');
+var scene=new T.Scene(),camera=new T.PerspectiveCamera(45,1,.1,100);
+var renderer=new T.WebGLRenderer({antialias:true,alpha:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));stage.appendChild(renderer.domElement);
+scene.add(new T.HemisphereLight(0xffffff,0x334455,.95));
+var sun=new T.DirectionalLight(0xffffff,.9);sun.position.set(3,6,4);scene.add(sun);
+scene.add(new T.GridHelper(10,20,0x4a6a80,0x2a4052));
+var root=new T.Group();scene.add(root);
+var H=3,dist=8,ry=.6,rx=.15,mixer=null,actions={},rig=null,clock=new T.Clock(),t=0;
+function size(){var w=stage.clientWidth,h=stage.clientHeight;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix();}
+window.addEventListener('resize',size);
+
+function ss(a,b,x){x=Math.max(0,Math.min(1,(x-a)/(b-a)));return x*x*(3-2*x);}
+function clearRoot(){while(root.children.length)root.remove(root.children[0]);mixer=null;actions={};rig=null;}
+
+// ---------- AUTO-RIG (static humanoid) ----------
+function buildRig(){
+var n=0;rig.meshes.forEach(function(m){n+=m.geometry.attributes.position.count;});
+rig.orig=[];rig.w=[];
+rig.meshes.forEach(function(m){
+var p=m.geometry.attributes.position,c=p.count,o=new Float32Array(p.array),w=new Float32Array(c*5);
+for(var i=0;i<c;i++){
+var x=o[i*3],y=o[i*3+1],tt=y/H,ax=Math.abs(x);
+var wa=ss(.17*H,.21*H,ax)*ss(.40,.46,tt)*(1-ss(.86,.92,tt));
+var wh=ss(.80,.86,tt)*(1-wa),wl=(1-ss(.46,.54,tt))*(1-wa);
+w[i*5]=wl;w[i*5+1]=wa;w[i*5+2]=wh;w[i*5+3]=ss(-.03*H,.03*H,x);w[i*5+4]=x>0?1:0;}
+rig.orig.push(o);rig.w.push(w);});
+rig.small=n<30000;}
+function useStatic(obj){
+obj.updateMatrixWorld(true);
+var meshes=[],box=new T.Box3();
+obj.traverse(function(o){if(o.isMesh){var g=o.geometry.clone();g.applyMatrix4(o.matrixWorld);
+if(!g.attributes.normal)g.computeVertexNormals();
+var m=new T.Mesh(g,o.material);meshes.push(m);g.computeBoundingBox();box.union(g.boundingBox);}});
+var s=H/(box.max.y-box.min.y),cx=(box.max.x+box.min.x)/2*s,cz=(box.max.z+box.min.z)/2*s,my=box.min.y*s;
+var body=new T.Group();
+meshes.forEach(function(m){m.geometry.scale(s,s,s);m.geometry.translate(-cx,-my,-cz);body.add(m);});
+root.add(body);rig={meshes:meshes,body:body};buildRig();
+sel.innerHTML='';[['walk','Lakad'],['run','Takbo'],['wave','Kumaway'],['dance','Sayaw'],['jump','Talon'],['idle','Idle']].forEach(function(a){var o=document.createElement('option');o.value=a[0];o.textContent=a[1];sel.appendChild(o);});
+info.textContent='Auto-rig: tao na nakatayo, nakaharap sa harap. Kung mali ang galaw, pindutin ang I-ikot ang rig 90°.';}
+function useClips(obj,clips){
+var box=new T.Box3().setFromObject(obj),sz=box.getSize(new T.Vector3());
+var s=H/Math.max(sz.y,1e-6);obj.scale.multiplyScalar(s);obj.updateMatrixWorld(true);
+box.setFromObject(obj);var c=box.getCenter(new T.Vector3());obj.position.x-=c.x;obj.position.z-=c.z;obj.position.y-=box.min.y;
+root.add(obj);mixer=new T.AnimationMixer(obj);sel.innerHTML='';
+clips.forEach(function(cl,i){actions[i]=mixer.clipAction(cl);var o=document.createElement('option');o.value=i;o.textContent=cl.name||('Galaw '+(i+1));sel.appendChild(o);});
+info.textContent='May sariling rig at '+clips.length+' galaw ang model na ito.';play();}
+function play(){if(!mixer)return;Object.keys(actions).forEach(function(k){actions[k].stop();});var a=actions[sel.value];if(a){a.reset().play();}}
+function setModel(obj,clips){
+clearRoot();var skinned=false;obj.traverse(function(o){if(o.isSkinnedMesh)skinned=true;});
+if(skinned||clips.length){if(!clips.length){useStatic(obj);info.textContent='May skeleton pero walang galaw ang file. Ginamit ang auto-rig.';}else useClips(obj,clips);}
+else useStatic(obj);}
+
+// ---------- POSES ----------
+function pose(a,p,sp){
+var P={lp:[0,0,0],ln:[0,0,0],ap:[0,0,0],an:[0,0,0],h:[0,0,0],by:0,bry:0,brx:0},k=t*sp,s;
+if(a==='walk'){s=Math.sin(k*6);P.lp[0]=s*.6;P.ln[0]=-s*.6;P.ap[0]=-s*.5;P.an[0]=s*.5;P.by=Math.abs(Math.cos(k*6))*.05;P.h[1]=Math.sin(k*3)*.08;P.ap[2]=.06;P.an[2]=-.06;}
+else if(a==='run'){s=Math.sin(k*10);P.lp[0]=s*1;P.ln[0]=-s*1;P.ap[0]=-s*.95;P.an[0]=s*.95;P.by=Math.abs(Math.cos(k*10))*.14;P.brx=.18;P.ap[2]=.1;P.an[2]=-.1;}
+else if(a==='wave'){P.ap[2]=2.4+Math.sin(k*8)*.3;P.an[2]=-.08;P.by=Math.sin(k*2)*.01;P.h[2]=Math.sin(k*4)*.06;}
+else if(a==='dance'){s=Math.sin(k*5);P.ap[2]=1.6+s*.8;P.an[2]=-(1.6+Math.sin(k*5+1)*.8);P.lp[2]=s*.15;P.ln[2]=s*.15;P.by=Math.abs(s)*.1;P.bry=Math.sin(k*2.5)*.5;P.h[2]=s*.2;}
+else if(a==='jump'){var j=Math.abs(Math.sin(k*3));P.by=j*.9;P.ap[2]=.3+j*1.8;P.an[2]=-(.3+j*1.8);P.lp[0]=-j*.3;P.ln[0]=-j*.3;}
+else{P.ap[2]=.08+Math.sin(k*1.5)*.04;P.an[2]=-.08-Math.sin(k*1.5)*.04;P.by=Math.sin(k*1.5)*.012;P.h[1]=Math.sin(k*.8)*.1;}
+return P;}
+function mat(piv,r){var m=new T.Matrix4().makeRotationFromEuler(new T.Euler(r[0],r[1],r[2]));
+var a=new T.Matrix4().makeTranslation(piv[0],piv[1],piv[2]),b=new T.Matrix4().makeTranslation(-piv[0],-piv[1],-piv[2]);return a.multiply(m).multiply(b);}
+var v=new T.Vector3(),q1=new T.Vector3(),q2=new T.Vector3();
+function blend(M1,M2,s,x,y,z,out){q1.set(x,y,z).applyMatrix4(M1);q2.set(x,y,z).applyMatrix4(M2);out.x=q2.x+(q1.x-q2.x)*s;out.y=q2.y+(q1.y-q2.y)*s;out.z=q2.z+(q1.z-q2.z)*s;}
+var d=new T.Vector3();
+function animateRig(sp){
+var P=pose(sel.value,0,sp),hip=[0,.48*H,0],sh=.14*H,shY=.8*H;
+var Mlp=mat(hip,P.lp),Mln=mat(hip,P.ln),Map=mat([sh,shY,0],P.ap),Man=mat([-sh,shY,0],P.an),Mh=mat([0,.84*H,0],P.h);
+rig.meshes.forEach(function(m,mi){
+var pa=m.geometry.attributes.position,a=pa.array,o=rig.orig[mi],w=rig.w[mi],c=pa.count;
+for(var i=0;i<c;i++){
+var x=o[i*3],y=o[i*3+1],z=o[i*3+2],dx=0,dy=0,dz=0,wl=w[i*5],wa=w[i*5+1],wh=w[i*5+2];
+if(wl>.001){blend(Mlp,Mln,w[i*5+3],x,y,z,d);dx+=wl*(d.x-x);dy+=wl*(d.y-y);dz+=wl*(d.z-z);}
+if(wa>.001){blend(Map,Man,w[i*5+4],x,y,z,d);dx+=wa*(d.x-x);dy+=wa*(d.y-y);dz+=wa*(d.z-z);}
+if(wh>.001){v.set(x,y,z).applyMatrix4(Mh);dx+=wh*(v.x-x);dy+=wh*(v.y-y);dz+=wh*(v.z-z);}
+a[i*3]=x+dx;a[i*3+1]=y+dy;a[i*3+2]=z+dz;}
+pa.needsUpdate=true;if(rig.small)m.geometry.computeVertexNormals();});
+rig.body.position.y=P.by;rig.body.rotation.set(P.brx,P.bry,0);}
+
+// ---------- UI ----------
+function load(buf){new T.GLTFLoader().parse(buf,'',function(g){setModel(g.scene,g.animations||[]);},function(){info.textContent='Hindi mabasa ang file na ito. Siguraduhing .glb ito.';});}
+document.getElementById('file').addEventListener('change',function(e){var f=e.target.files[0];if(!f)return;info.textContent='Binabasa ang file...';f.arrayBuffer().then(load);});
+sel.addEventListener('change',play);
+spd.addEventListener('input',function(){document.getElementById('speedO').textContent=spd.value;});
+document.getElementById('turn').addEventListener('click',function(){
+if(!rig){info.textContent='Gumagana lang ito sa model na walang sariling rig.';return;}
+var R=new T.Matrix4().makeRotationY(Math.PI/2);
+rig.meshes.forEach(function(m,i){m.geometry.attributes.position.array.set(rig.orig[i]);m.geometry.applyMatrix4(R);});buildRig();});
+document.getElementById('sample').addEventListener('click',function(){
+var defs=[[.5,1.4,.5,-.27,.7,0,0x2b6cb0],[.5,1.4,.5,.27,.7,0,0x2b6cb0],[1.04,1,.6,0,1.9,0,0xffb703],[.4,1,.45,-.82,1.9,0,0xf2c9a0],[.4,1,.45,.82,1.9,0,0xf2c9a0],[.6,.6,.6,0,2.7,0,0xf2c9a0],[.1,.1,.05,-.15,2.78,.3,0x1a1a1a],[.1,.1,.05,.15,2.78,.3,0x1a1a1a]];
+var P=[],N=[],C=[];
+defs.forEach(function(q){var g=new T.BoxGeometry(q[0],q[1],q[2]).toNonIndexed();g.translate(q[3],q[4],q[5]);var p=g.attributes.position.array,n=g.attributes.normal.array,c=new T.Color(q[6]);
+for(var i=0;i<p.length;i+=3){P.push(p[i],p[i+1],p[i+2]);N.push(n[i],n[i+1],n[i+2]);C.push(c.r,c.g,c.b);}});
+var g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttribute(P,3));g.setAttribute('normal',new T.Float32BufferAttribute(N,3));g.setAttribute('color',new T.Float32BufferAttribute(C,3));
+var grp=new T.Group();grp.add(new T.Mesh(g,new T.MeshStandardMaterial({vertexColors:true,roughness:.8})));setModel(grp,[]);});
+
+var pts={},last=0;
+stage.addEventListener('pointerdown',function(e){stage.setPointerCapture(e.pointerId);pts[e.pointerId]=[e.clientX,e.clientY];});
+stage.addEventListener('pointerup',function(e){delete pts[e.pointerId];last=0;});
+stage.addEventListener('pointermove',function(e){var p=pts[e.pointerId];if(!p)return;var ids=Object.keys(pts);
+if(ids.length===1){ry-=(e.clientX-p[0])*.01;rx=Math.max(-.2,Math.min(1.3,rx+(e.clientY-p[1])*.01));}
+pts[e.pointerId]=[e.clientX,e.clientY];
+if(ids.length===2){var a=pts[ids[0]],b=pts[ids[1]],dd=Math.hypot(a[0]-b[0],a[1]-b[1]);if(last)dist=Math.max(3,Math.min(20,dist*last/dd));last=dd;}});
+stage.addEventListener('wheel',function(e){e.preventDefault();dist=Math.max(3,Math.min(20,dist+e.deltaY*.01));},{passive:false});
+
+function loop(){requestAnimationFrame(loop);var dt=clock.getDelta(),sp=+spd.value;t+=dt;
+if(mixer){mixer.timeScale=sp;mixer.update(dt);}else if(rig)animateRig(sp);
+camera.position.set(Math.sin(ry)*Math.cos(rx)*dist,1.5+Math.sin(rx)*dist,Math.cos(ry)*Math.cos(rx)*dist);camera.lookAt(0,1.4,0);renderer.render(scene,camera);}
+size();loop();
+})();
+</script>
+</body>
+</html>
