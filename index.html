@@ -41,12 +41,15 @@ input[type=range]{width:100%;accent-color:var(--acc)}
 </div>
 <div class="btns">
 <select id="anim" aria-label="Galaw"></select>
+<button id="dl">I-download .GLB (may galaw)</button>
 </div>
 <div class="row"><span>Bilis</span><input id="speed" type="range" min="0.2" max="3" step="0.1" value="1"><output id="speedO">1</output></div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/exporters/GLTFExporter.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script>
 (function(){
 var T=THREE,stage=document.getElementById('stage'),info=document.getElementById('info');
@@ -63,7 +66,8 @@ function size(){var w=stage.clientWidth,h=stage.clientHeight;renderer.setSize(w,
 window.addEventListener('resize',size);
 
 function ss(a,b,x){x=Math.max(0,Math.min(1,(x-a)/(b-a)));return x*x*(3-2*x);}
-function clearRoot(){while(root.children.length)root.remove(root.children[0]);mixer=null;actions={};rig=null;}
+var loaded=null;
+function clearRoot(){while(root.children.length)root.remove(root.children[0]);mixer=null;actions={};rig=null;loaded=null;}
 
 // ---------- AUTO-RIG (static humanoid) ----------
 function buildRig(){
@@ -94,7 +98,7 @@ function useClips(obj,clips){
 var box=new T.Box3().setFromObject(obj),sz=box.getSize(new T.Vector3());
 var s=H/Math.max(sz.y,1e-6);obj.scale.multiplyScalar(s);obj.updateMatrixWorld(true);
 box.setFromObject(obj);var c=box.getCenter(new T.Vector3());obj.position.x-=c.x;obj.position.z-=c.z;obj.position.y-=box.min.y;
-root.add(obj);mixer=new T.AnimationMixer(obj);sel.innerHTML='';
+root.add(obj);loaded={obj:obj,clips:clips};mixer=new T.AnimationMixer(obj);sel.innerHTML='';
 clips.forEach(function(cl,i){actions[i]=mixer.clipAction(cl);var o=document.createElement('option');o.value=i;o.textContent=cl.name||('Galaw '+(i+1));sel.appendChild(o);});
 info.textContent='May sariling rig at '+clips.length+' galaw ang model na ito.';play();}
 function play(){if(!mixer)return;Object.keys(actions).forEach(function(k){actions[k].stop();});var a=actions[sel.value];if(a){a.reset().play();}}
@@ -112,7 +116,7 @@ else if(a==='wave'){P.ap[2]=2.4+Math.sin(k*8)*.3;P.an[2]=-.08;P.by=Math.sin(k*2)
 else if(a==='dance'){s=Math.sin(k*5);P.ap[2]=1.6+s*.8;P.an[2]=-(1.6+Math.sin(k*5+1)*.8);P.lp[2]=s*.15;P.ln[2]=s*.15;P.by=Math.abs(s)*.1;P.bry=Math.sin(k*2.5)*.5;P.h[2]=s*.2;}
 else if(a==='attack'){var c=(k*2.5)%1,f;if(c<.4)f=.9*(c/.4);else if(c<.6)f=.9-2.9*((c-.4)/.2);else f=-2*(1-ss(.6,1,c));var st=Math.max(0,-f)/2;P.ap[0]=f;P.ap[2]=.15;P.an[0]=-1.1;P.an[2]=-.25;P.bry=-st*.5;P.brx=.1+st*.15;P.lp[0]=-st*.5;P.ln[0]=st*.5;P.by=st*.05;P.h[1]=st*.15;}
 else if(a==='jump'){var j=Math.abs(Math.sin(k*3));P.by=j*.9;P.ap[2]=.3+j*1.8;P.an[2]=-(.3+j*1.8);P.lp[0]=-j*.3;P.ln[0]=-j*.3;}
-else{P.ap[2]=.08+Math.sin(k*1.5)*.04;P.an[2]=-.08-Math.sin(k*1.5)*.04;P.by=Math.sin(k*1.5)*.012;P.h[1]=Math.sin(k*.8)*.1;}
+else{P.ap[2]=.08+Math.sin(k*1.5)*.04;P.an[2]=-.08-Math.sin(k*1.5)*.04;P.by=Math.sin(k*1.5)*.012;P.h[1]=Math.sin(k*.75)*.1;}
 return P;}
 function mat(piv,r){var m=new T.Matrix4().makeRotationFromEuler(new T.Euler(r[0],r[1],r[2]));
 var a=new T.Matrix4().makeTranslation(piv[0],piv[1],piv[2]),b=new T.Matrix4().makeTranslation(-piv[0],-piv[1],-piv[2]);return a.multiply(m).multiply(b);}
@@ -132,6 +136,50 @@ if(wh>.001){v.set(x,y,z).applyMatrix4(Mh);dx+=wh*(v.x-x);dy+=wh*(v.y-y);dz+=wh*(
 a[i*3]=x+dx;a[i*3+1]=y+dy;a[i*3+2]=z+dz;}
 pa.needsUpdate=true;if(rig.small)m.geometry.computeVertexNormals();});
 rig.body.position.y=P.by;rig.body.rotation.set(P.brx,P.bry,0);}
+
+
+// ---------- EXPORT: GLB na may skeleton at galaw ----------
+function buildExport(){
+var names=['Root','LegP','LegN','ArmP','ArmN','Head'],hip=[0,.48*H,0],sh=.14*H,shY=.8*H;
+var piv=[[0,0,0],hip,hip,[sh,shY,0],[-sh,shY,0],[0,.84*H,0]];
+var bones=names.map(function(n,i){var b=new T.Bone();b.name=n;if(i)b.position.set(piv[i][0],piv[i][1],piv[i][2]);return b;});
+for(var i=1;i<6;i++)bones[0].add(bones[i]);
+var out=new T.Group();out.name='Character';var sms=[];
+rig.meshes.forEach(function(m,mi){
+var g=m.geometry.clone(),pa=g.attributes.position;pa.array.set(rig.orig[mi]);pa.needsUpdate=true;if(rig.small)g.computeVertexNormals();
+var w=rig.w[mi],c=pa.count,si=new Uint16Array(c*4),sw=new Float32Array(c*4);
+for(var i=0;i<c;i++){var s=w[i*5+3],sa=w[i*5+4],wl=w[i*5],wa=w[i*5+1],wh=w[i*5+2];
+var c6=[0,wl*s,wl*(1-s),wa*sa,wa*(1-sa),wh];c6[0]=Math.max(0,1-(c6[1]+c6[2]+c6[3]+c6[4]+c6[5]));
+var idx=[0,1,2,3,4,5].sort(function(a,b){return c6[b]-c6[a];}).slice(0,4),tot=0;
+idx.forEach(function(j){tot+=c6[j];});
+for(var k=0;k<4;k++){si[i*4+k]=idx[k];sw[i*4+k]=tot>0?c6[idx[k]]/tot:(k?0:1);}}
+g.setAttribute('skinIndex',new T.Uint16BufferAttribute(si,4));g.setAttribute('skinWeight',new T.Float32BufferAttribute(sw,4));
+var sm=new T.SkinnedMesh(g,m.material);sm.name='Body'+mi;out.add(sm);sms.push(sm);});
+out.add(bones[0]);out.updateMatrixWorld(true);
+var skel=new T.Skeleton(bones);sms.forEach(function(sm){sm.bind(skel);});
+var E=new T.Euler(),q=new T.Quaternion(),t0=t;
+var defs=[['Walk','walk',2*Math.PI/3],['Run','run',2*Math.PI/10],['Wave','wave',Math.PI],['Dance','dance',2*Math.PI/2.5],['Jump','jump',Math.PI/3],['Attack','attack',.4],['Idle','idle',2*Math.PI/.75]];
+var clips=defs.map(function(d){
+var N=Math.max(2,Math.round(d[2]*30)),times=[],pos=[],Q=[[],[],[],[],[],[]];
+function put(i,r){q.setFromEuler(E.set(r[0],r[1],r[2]));Q[i].push(q.x,q.y,q.z,q.w);}
+for(var f=0;f<=N;f++){t=d[2]*f/N;var P=pose(d[1],0,1);times.push(t);pos.push(0,P.by,0);
+put(0,[P.brx,P.bry,0]);put(1,P.lp);put(2,P.ln);put(3,P.ap);put(4,P.an);put(5,P.h);}
+var tracks=[new T.VectorKeyframeTrack('Root.position',times,pos)];
+for(var i=0;i<6;i++)tracks.push(new T.QuaternionKeyframeTrack(names[i]+'.quaternion',times,Q[i]));
+return new T.AnimationClip(d[0],-1,tracks);});
+t=t0;return {obj:out,clips:clips};}
+async function saveGlb(buf){
+var D=null;try{if(window.claude&&claude.use)D=await claude.use('downloads');}catch(e){}
+if(D&&window.JSZip){var z=new JSZip();z.file('character_animated.glb',buf);
+var blob=await z.generateAsync({type:'blob'});
+await D.save({filename:'character_animated.zip',data:blob});info.textContent='Na-save ang zip. I-extract ito para makuha ang character_animated.glb.';}
+else{var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([buf],{type:'model/gltf-binary'}));a.download='character_animated.glb';document.body.appendChild(a);a.click();a.remove();info.textContent='Na-download ang character_animated.glb.';}}
+document.getElementById('dl').addEventListener('click',function(){
+var src=null;try{src=loaded||(rig?buildExport():null);}catch(e){info.textContent='Hindi nagawa ang export: '+e.message;return;}
+if(!src){info.textContent='Mag-load muna ng model.';return;}
+info.textContent='Ginagawa ang GLB...';
+try{new T.GLTFExporter().parse(src.obj,function(r){saveGlb(r).catch(function(e){info.textContent=(e&&e.code==='declined')?'Kinansela ang download.':'Hindi na-save ang file.';});},{binary:true,trs:true,animations:src.clips});}
+catch(e){info.textContent='Hindi nagawa ang export: '+e.message;}});
 
 // ---------- UI ----------
 function load(buf){new T.GLTFLoader().parse(buf,'',function(g){setModel(g.scene,g.animations||[]);},function(){info.textContent='Hindi mabasa ang file na ito. Siguraduhing .glb ito.';});}
